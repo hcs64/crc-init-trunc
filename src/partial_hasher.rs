@@ -89,7 +89,8 @@ impl<'a> PartialHasherFillFromEnd<'a> {
         let extend_hasher =
             Hasher::new_with_initial_len(zeroes_crc32(buf_size_u64 - 1), buf_size_u64 - 1);
         let rolling_mask = std::array::from_fn(|i| {
-            let mut hasher = extend_hasher.clone();
+            let mut hasher = Hasher::new();
+            hasher.combine(&extend_hasher);
             hasher.update(&[1 << i]);
             hasher.finalize() ^ INIT_CRC
         });
