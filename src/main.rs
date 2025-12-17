@@ -46,24 +46,19 @@ fn main() {
 
     let infile = std::fs::read(infile_name).expect("read infile");
 
-    match mode {
-        Mode::Start => {
-            let mut hasher = partial_hasher::PartialHasher::new_fill_from_end(&infile);
+    let hasher = match mode {
+        Mode::Start => partial_hasher::PartialHasher::new_fill_from_end(&infile),
+        Mode::End => partial_hasher::PartialHasher::new_zero_from_end(&infile),
+    };
 
-            for first_non_truncated_byte in (0..=infile.len()).rev() {
-                let current_crc = hasher.next().unwrap();
-                if current_crc == target_crc {
-                    println!("matches with 0 from start until {first_non_truncated_byte:#x}");
+    for (current_crc, i) in hasher.zip((0..=infile.len()).rev()) {
+        if current_crc == target_crc {
+            match mode {
+                Mode::Start => {
+                    println!("matches with 0 from start until {i:#x}");
                 }
-            }
-        }
-        Mode::End => {
-            let mut hasher = partial_hasher::PartialHasher::new_zero_from_end(&infile);
-
-            for first_truncated_byte in (0..=infile.len()).rev() {
-                let current_crc = hasher.next().unwrap();
-                if current_crc == target_crc {
-                    println!("matches with 0 from {first_truncated_byte:#x} until end");
+                Mode::End => {
+                    println!("matches with 0 from {i:#x} until end");
                 }
             }
         }
