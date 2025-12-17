@@ -1,13 +1,6 @@
 use crc32fast::Hasher;
 
-// Note: The structure and implementation of PartialHasherZeroFromEnd and PartialHasherFillFromEnd
-// are identical, they are duplicated because otherwise the compiled common code is several times
-// slower.
-
-/// First return the crc32 of `buf`, then progressively replace bytes at the end with zero.
-/// Intermediate results will be the crc32 of `buf` filled with zeroes from the end. The final
-/// result will be the crc32 of all zeroes.
-pub struct PartialHasherZeroFromEnd<'a> {
+pub struct PartialHasher<'a> {
     buf: &'a [u8],
     first: bool,
 
@@ -17,8 +10,8 @@ pub struct PartialHasherZeroFromEnd<'a> {
     advance_xor: u32,
 }
 
-impl<'a> PartialHasherZeroFromEnd<'a> {
-    pub fn new(buf: &'a [u8]) -> Self {
+impl<'a> PartialHasher<'a> {
+    fn new_common(buf: &'a [u8]) -> Self {
         if buf.is_empty() {
             let crc = crc32fast::hash(b"");
             return Self {
@@ -30,58 +23,7 @@ impl<'a> PartialHasherZeroFromEnd<'a> {
                 advance_xor: 0,
             };
         }
-        let buf_size_u64 = u64::try_from(buf.len()).expect("u64 should fit file size");
 
-        let all_zero_crc = zeroes_crc32(buf_size_u64);
-        let current_crc = crc32fast::hash(buf);
-
-        let extend_hasher =
-            Hasher::new_with_initial_len(zeroes_crc32(buf_size_u64 - 1), buf_size_u64 - 1);
-        let rolling_mask = std::array::from_fn(|i| {
-            let mut hasher = Hasher::new();
-            hasher.combine(&extend_hasher);
-            hasher.update(&[1 << i]);
-            hasher.finalize() ^ INIT_CRC
-        });
-        let advance_xor = block_advance_xor(buf_size_u64);
-
-        Self {
-            buf,
-            first: true,
-            all_zero_crc,
-            current_crc,
-            rolling_mask,
-            advance_xor,
-        }
-    }
-}
-
-/// First return the crc32 of all zeroes, then progressively fill in the bytes from `buf`, starting
-/// from the end. Intermediate results will be the crc32 of a `buf` filled with zeroes from the
-/// start. The final result will be the crc32 of `buf`.
-pub struct PartialHasherFillFromEnd<'a> {
-    buf: &'a [u8],
-    first: bool,
-
-    all_zero_crc: u32,
-    current_crc: u32,
-    rolling_mask: [u32; 8],
-    advance_xor: u32,
-}
-
-impl<'a> PartialHasherFillFromEnd<'a> {
-    pub fn new(buf: &'a [u8]) -> Self {
-        if buf.is_empty() {
-            let crc = crc32fast::hash(b"");
-            return Self {
-                buf,
-                first: true,
-                all_zero_crc: crc,
-                current_crc: crc,
-                rolling_mask: [0; 8],
-                advance_xor: 0,
-            };
-        }
         let buf_size_u64 = u64::try_from(buf.len()).expect("u64 should fit file size");
 
         let all_zero_crc = zeroes_crc32(buf_size_u64);
@@ -105,41 +47,26 @@ impl<'a> PartialHasherFillFromEnd<'a> {
             advance_xor,
         }
     }
-}
 
-impl Iterator for PartialHasherZeroFromEnd<'_> {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<u32> {
-        if self.first {
-            self.first = false;
-            return Some(self.current_crc);
+    /// First return the crc32 of `buf`, then progressively replace bytes at the end with zero.
+    /// Intermediate results will be the crc32 of `buf` filled with zeroes from the end. The final
+    /// result will be the crc32 of all zeroes.
+    pub fn new_zero_from_end(buf: &'a [u8]) -> Self {
+        Self {
+            current_crc: crc32fast::hash(buf),
+            ..Self::new_common(buf)
         }
+    }
 
-        let (last_byte, rest) = self.buf.split_last()?;
-
-        // update the crc, setting the last byte to or from 0
-        for i in 0..8 {
-            if last_byte & (1 << i) != 0 {
-                let mask_crc = self.rolling_mask[i] ^ INIT_CRC;
-                let diff = mask_crc ^ self.all_zero_crc;
-                self.current_crc ^= diff;
-            }
-        }
-
-        // roll the bit masks to apply to the previous byte
-        self.buf = rest;
-        if !self.buf.is_empty() {
-            for i in 0..8 {
-                self.rolling_mask[i] = update_0(self.rolling_mask[i]) ^ self.advance_xor;
-            }
-        }
-
-        Some(self.current_crc)
+    /// First return the crc32 of all zeroes, then progressively fill in the bytes from `buf`,
+    /// starting from the end. Intermediate results will be the crc32 of a `buf` filled with zeroes
+    /// from the start. The final result will be the crc32 of `buf`.
+    pub fn new_fill_from_end(buf: &'a [u8]) -> Self {
+        Self::new_common(buf)
     }
 }
 
-impl Iterator for PartialHasherFillFromEnd<'_> {
+impl Iterator for PartialHasher<'_> {
     type Item = u32;
 
     fn next(&mut self) -> Option<u32> {
@@ -237,8 +164,7 @@ fn block_advance_xor(block_size: u64) -> u32 {
 
 #[cfg(test)]
 mod test {
-    use super::PartialHasherFillFromEnd;
-    use super::PartialHasherZeroFromEnd;
+    use super::PartialHasher;
     use rand_xoshiro::Xoshiro256StarStar;
     use rand_xoshiro::rand_core::RngCore;
     use rand_xoshiro::rand_core::SeedableRng;
@@ -259,7 +185,7 @@ mod test {
             rand.fill_bytes(target.as_mut_slice());
 
             let target = target.as_slice();
-            let mut rolling = PartialHasherFillFromEnd::new(target);
+            let mut rolling = PartialHasher::new_fill_from_end(target);
 
             for first_non_truncated_byte in (0..=target.len()).rev() {
                 let expected_crc = true_initial_truncate_crc(target, first_non_truncated_byte);
@@ -294,7 +220,7 @@ mod test {
 
                 let expected_crc = true_initial_truncate_crc(target, first_non_truncated_byte);
 
-                let mut rolling = PartialHasherFillFromEnd::new(target);
+                let mut rolling = PartialHasher::new_fill_from_end(target);
 
                 for i in (0..=size).rev() {
                     let actual_crc = rolling.next().unwrap();
@@ -327,7 +253,7 @@ mod test {
             rand.fill_bytes(target.as_mut_slice());
 
             let target = target.as_slice();
-            let mut rolling = PartialHasherZeroFromEnd::new(target);
+            let mut rolling = PartialHasher::new_zero_from_end(target);
 
             for first_truncated_byte in (0..=target.len()).rev() {
                 let expected_crc = true_truncate_crc(target, first_truncated_byte);
@@ -362,7 +288,7 @@ mod test {
 
                 let expected_crc = true_truncate_crc(target, first_truncated_byte);
 
-                let mut rolling = PartialHasherZeroFromEnd::new(target);
+                let mut rolling = PartialHasher::new_zero_from_end(target);
 
                 for i in (0..=size).rev() {
                     let actual_crc = rolling.next().unwrap();

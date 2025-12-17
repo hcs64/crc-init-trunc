@@ -48,7 +48,7 @@ fn main() {
 
     match mode {
         Mode::Start => {
-            let mut hasher = partial_hasher::PartialHasherFillFromEnd::new(&infile);
+            let mut hasher = partial_hasher::PartialHasher::new_fill_from_end(&infile);
 
             for first_non_truncated_byte in (0..=infile.len()).rev() {
                 let current_crc = hasher.next().unwrap();
@@ -58,7 +58,7 @@ fn main() {
             }
         }
         Mode::End => {
-            let mut hasher = partial_hasher::PartialHasherZeroFromEnd::new(&infile);
+            let mut hasher = partial_hasher::PartialHasher::new_zero_from_end(&infile);
 
             for first_truncated_byte in (0..=infile.len()).rev() {
                 let current_crc = hasher.next().unwrap();
