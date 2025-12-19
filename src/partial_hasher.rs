@@ -17,7 +17,7 @@ impl<'a> PartialHasher<'a> {
             return Self {
                 buf,
                 first: true,
-                all_zero: crc ^ INIT_CRC,
+                all_zero: crc ^ FINAL_CRC_XOR,
                 current_crc: crc,
                 rolling_mask: [0; 8],
                 advance_xor: 0,
@@ -27,6 +27,7 @@ impl<'a> PartialHasher<'a> {
         let buf_size_u64 = u64::try_from(buf.len()).expect("u64 should fit file size");
 
         let all_zero_crc = zeroes_crc32(buf_size_u64);
+        let advance_xor = block_advance_xor(buf_size_u64);
 
         let extend_hasher =
             Hasher::new_with_initial_len(zeroes_crc32(buf_size_u64 - 1), buf_size_u64 - 1);
@@ -34,14 +35,13 @@ impl<'a> PartialHasher<'a> {
             let mut hasher = Hasher::new();
             hasher.combine(&extend_hasher);
             hasher.update(&[1 << i]);
-            hasher.finalize() ^ INIT_CRC
+            hasher.finalize() ^ FINAL_CRC_XOR
         });
-        let advance_xor = block_advance_xor(buf_size_u64);
 
         Self {
             buf,
             first: true,
-            all_zero: all_zero_crc ^ INIT_CRC,
+            all_zero: all_zero_crc ^ FINAL_CRC_XOR,
             current_crc: all_zero_crc,
             rolling_mask,
             advance_xor,
@@ -117,7 +117,7 @@ fn zeroes_crc32(block_size: u64) -> u32 {
     acc.finalize()
 }
 
-const INIT_CRC: u32 = !0;
+const FINAL_CRC_XOR: u32 = !0;
 const IEEE_TABLE: [u32; 256] = [
     0, 1996959894, 3993919788, 2567524794, 124634137, 1886057615, 3915621685, 2657392035,
     249268274, 2044508324, 3772115230, 2547177864, 162941995, 2125561021, 3887607047, 2428444049,
@@ -158,7 +158,7 @@ fn update_0(crc: u32) -> u32 {
 }
 
 fn block_advance_xor(block_size: u64) -> u32 {
-    let last = zeroes_crc32(block_size) ^ INIT_CRC;
+    let last = zeroes_crc32(block_size) ^ FINAL_CRC_XOR;
     last ^ update_0(last)
 }
 
