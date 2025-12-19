@@ -51,7 +51,8 @@ fn main() {
         Mode::End => partial_hasher::PartialHasher::new_zero_from_end(&infile),
     };
 
-    for (current_crc, i) in hasher.zip((0..=infile.len()).rev()) {
+    let mut i = infile.len();
+    for current_crc in hasher {
         if current_crc == target_crc {
             match mode {
                 Mode::Start => {
@@ -62,5 +63,9 @@ fn main() {
                 }
             }
         }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
     }
 }
