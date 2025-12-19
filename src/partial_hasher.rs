@@ -4,7 +4,7 @@ pub struct PartialHasher<'a> {
     buf: &'a [u8],
     first: bool,
 
-    all_zero_crc: u32,
+    all_zero: u32,
     current_crc: u32,
     rolling_mask: [u32; 8],
     advance_xor: u32,
@@ -17,7 +17,7 @@ impl<'a> PartialHasher<'a> {
             return Self {
                 buf,
                 first: true,
-                all_zero_crc: crc,
+                all_zero: crc ^ INIT_CRC,
                 current_crc: crc,
                 rolling_mask: [0; 8],
                 advance_xor: 0,
@@ -41,7 +41,7 @@ impl<'a> PartialHasher<'a> {
         Self {
             buf,
             first: true,
-            all_zero_crc,
+            all_zero: all_zero_crc ^ INIT_CRC,
             current_crc: all_zero_crc,
             rolling_mask,
             advance_xor,
@@ -80,8 +80,8 @@ impl Iterator for PartialHasher<'_> {
         // update the crc, setting the last byte to or from 0
         for i in 0..8 {
             if last_byte & (1 << i) != 0 {
-                let mask_crc = self.rolling_mask[i] ^ INIT_CRC;
-                let diff = mask_crc ^ self.all_zero_crc;
+                let mask_crc = self.rolling_mask[i];
+                let diff = mask_crc ^ self.all_zero;
                 self.current_crc ^= diff;
             }
         }
