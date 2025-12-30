@@ -4,8 +4,8 @@ pub struct PartialHasher<'a> {
 
     all_zero: u32,
     current_crc: u32,
-    rolling_bit_mask: u32,
-    advance_one_bit: u32,
+    rolling_bit_masks: [u32; 8],
+    advance_one_byte: u32,
 }
 
 impl<'a> PartialHasher<'a> {
@@ -17,8 +17,8 @@ impl<'a> PartialHasher<'a> {
                 first: true,
                 all_zero: crc ^ FINAL_CRC_XOR,
                 current_crc: crc,
-                rolling_bit_mask: 0,
-                advance_one_bit: 0,
+                rolling_bit_masks: [0; 8],
+                advance_one_byte: 0,
             };
         }
 
@@ -30,16 +30,23 @@ impl<'a> PartialHasher<'a> {
         // zero bit at the end since we need block_zero anyway, equivalent for all zeroes)
         let advance_one_bit = block_zero ^ block_zero_plus_one_bit;
 
+        let mut rolling_bit_masks = [0; 8];
         // roll in a single 1
-        let rolling_bit_mask = update_one_bit(block_zero, true) ^ advance_one_bit;
+        rolling_bit_masks[0] = update_one_bit(block_zero, true) ^ advance_one_bit;
+        for i in 1..8 {
+            rolling_bit_masks[i] =
+                update_one_bit(rolling_bit_masks[i - 1], false) ^ advance_one_bit;
+        }
+
+        let advance_one_byte = add_zeroes(block_zero, 1) ^ block_zero;
 
         Self {
             buf,
             first: true,
             all_zero: block_zero,
             current_crc: block_zero ^ FINAL_CRC_XOR,
-            rolling_bit_mask,
-            advance_one_bit,
+            rolling_bit_masks,
+            advance_one_byte,
         }
     }
 
@@ -72,12 +79,13 @@ impl Iterator for PartialHasher<'_> {
 
         let (last_byte, rest) = self.buf.split_last()?;
 
-        for i in (0..8).rev() {
-            if last_byte & (1 << i) != 0 {
-                self.current_crc ^= self.rolling_bit_mask ^ self.all_zero;
+        for i in 0..8 {
+            let bit_mask = self.rolling_bit_masks[i];
+            if last_byte & (0x80 >> i) != 0 {
+                self.current_crc ^= bit_mask ^ self.all_zero;
             }
-            self.rolling_bit_mask =
-                update_one_bit(self.rolling_bit_mask, false) ^ self.advance_one_bit;
+            self.rolling_bit_masks[i] =
+                BYTE_TABLE[usize::from(bit_mask as u8)] ^ (bit_mask >> 8) ^ self.advance_one_byte;
         }
         self.buf = rest;
 
@@ -89,7 +97,7 @@ const INITIAL_CRC: u32 = !0;
 const FINAL_CRC_XOR: u32 = !0;
 const IEEE_802_3_POLY: u32 = 0xEDB88320; // lsb-first
 
-fn update_one_bit(mut crc: u32, b: bool) -> u32 {
+const fn update_one_bit(mut crc: u32, b: bool) -> u32 {
     if b {
         crc ^= 1;
     }
@@ -141,7 +149,7 @@ const fn compute_byte_powers() -> [u32; 64] {
 // `BYTE_POWERS[k] = (x ^ (8 * 2 ^ k)) MOD IEEE_802_3_POLY`
 const BYTE_POWERS: [u32; 64] = compute_byte_powers();
 
-fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
+const fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
     let mut power_i = 0;
     while block_size != 0 {
         if block_size & 1 != 0 {
@@ -153,6 +161,28 @@ fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
 
     crc
 }
+
+const fn compute_byte_table() -> [u32; 256] {
+    let mut i = 0;
+    let mut table = [0; 256];
+
+    while i < 256 {
+        let mut crc = 0;
+
+        let mut j = 0;
+        while j < 8 {
+            crc = update_one_bit(crc, (i >> j) & 1 != 0);
+            j += 1;
+        }
+
+        table[i] = crc;
+        i += 1;
+    }
+
+    table
+}
+
+static BYTE_TABLE: [u32; 256] = compute_byte_table();
 
 #[cfg(test)]
 mod test {
