@@ -103,33 +103,52 @@ fn update_one_bit(mut crc: u32, b: bool) -> u32 {
     }
 }
 
-fn mult_mod(v0: u32, v1: u32) -> u32 {
+const fn mult_mod(v0: u32, v1: u32) -> u32 {
     // Note: bit 0 of p is unused
     let mut p: u64 = 0;
-    for i in 0..=31 {
+    let mut i = 0;
+    while i <= 31 {
         if v0 & (1u32 << i) != 0 {
-            p ^= u64::from(v1) << (i + 1);
+            p ^= (v1 as u64) << (i + 1);
         }
+        i += 1;
     }
-    for i in 1..=31 {
+
+    let mut i = 1;
+    while i <= 31 {
         if p & (1u64 << i) != 0 {
-            p ^= u64::from(IEEE_802_3_POLY) << (i + 1);
+            p ^= (IEEE_802_3_POLY as u64) << (i + 1);
         }
+        i += 1;
     }
     (p >> 32) as u32
 }
 
-fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
-    // Start with x^8, one followed by 1 byte of zeroes
-    // Note: The succession of values in `bytes` is constant
-    let mut power = 0x00_80_00_00;
+const fn compute_byte_powers() -> [u32; 64] {
+    let mut powers = [0; 64];
 
+    // Start with x^8, one followed by 1 byte of zeroes
+    powers[0] = 0x00_80_00_00;
+    let mut i = 1;
+    while i < 64 {
+        powers[i] = mult_mod(powers[i - 1], powers[i - 1]);
+        i += 1;
+    }
+
+    powers
+}
+
+// `BYTE_POWERS[k] = (x ^ (8 * 2 ^ k)) MOD IEEE_802_3_POLY`
+const BYTE_POWERS: [u32; 64] = compute_byte_powers();
+
+fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
+    let mut power_i = 0;
     while block_size != 0 {
         if block_size & 1 != 0 {
-            crc = mult_mod(crc, power);
+            crc = mult_mod(crc, BYTE_POWERS[power_i]);
         }
-        power = mult_mod(power, power);
         block_size >>= 1;
+        power_i += 1;
     }
 
     crc
