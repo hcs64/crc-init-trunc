@@ -1,5 +1,3 @@
-use crc32fast::Hasher;
-
 pub struct PartialHasher<'a> {
     buf: &'a [u8],
     first: bool,
@@ -26,23 +24,20 @@ impl<'a> PartialHasher<'a> {
 
         let buf_size_u64 = u64::try_from(buf.len()).expect("u64 should fit file size");
 
-        let all_zero_crc = zeroes_crc32(buf_size_u64);
+        let block_zero = add_zeroes(INITIAL_CRC, buf_size_u64);
+        let block_zero_plus_one_bit = update_one_bit(block_zero, false);
+        // the difference in CRC from one extra 0 bit at the start (calculated here from adding one
+        // zero bit at the end since we need block_zero anyway, equivalent for all zeroes)
+        let advance_one_bit = block_zero ^ block_zero_plus_one_bit;
 
-        let advance_one_bit =
-            all_zero_crc ^ FINAL_CRC_XOR ^ update_one_bit(all_zero_crc ^ FINAL_CRC_XOR, false);
-
-        let rolling_bit_mask = {
-            let mut hasher =
-                Hasher::new_with_initial_len(zeroes_crc32(buf_size_u64 - 1), buf_size_u64 - 1);
-            hasher.update(&[0x80]); // last bit (lsb-first)
-            hasher.finalize() ^ FINAL_CRC_XOR
-        };
+        // roll in a single 1
+        let rolling_bit_mask = update_one_bit(block_zero, true) ^ advance_one_bit;
 
         Self {
             buf,
             first: true,
-            all_zero: all_zero_crc ^ FINAL_CRC_XOR,
-            current_crc: all_zero_crc,
+            all_zero: block_zero,
+            current_crc: block_zero ^ FINAL_CRC_XOR,
             rolling_bit_mask,
             advance_one_bit,
         }
@@ -90,30 +85,11 @@ impl Iterator for PartialHasher<'_> {
     }
 }
 
-fn zeroes_crc32(block_size: u64) -> u32 {
-    // Get the CRC of a block of zeroes by adding powers of 2
-    let mut pow2_zero_block_crc = crc32fast::hash(&[0]);
-    let mut acc = Hasher::new();
-    for n in 0..=63 {
-        let pow2 = 1u64 << n;
-        let mut h = Hasher::new_with_initial_len(pow2_zero_block_crc, pow2);
-        if (block_size & pow2) != 0 {
-            acc.combine(&h);
-        } else if block_size < pow2 {
-            break;
-        }
-        h.combine(&h.clone());
-        pow2_zero_block_crc = h.finalize();
-    }
-
-    acc.finalize()
-}
-
+const INITIAL_CRC: u32 = !0;
 const FINAL_CRC_XOR: u32 = !0;
+const IEEE_802_3_POLY: u32 = 0xEDB88320; // lsb-first
 
 fn update_one_bit(mut crc: u32, b: bool) -> u32 {
-    const IEEE_802_3_POLY: u32 = 0xEDB88320; // lsb-first
-
     if b {
         crc ^= 1;
     }
@@ -127,12 +103,73 @@ fn update_one_bit(mut crc: u32, b: bool) -> u32 {
     }
 }
 
+fn mult_mod(v0: u32, v1: u32) -> u32 {
+    // Note: bit 0 of p is unused
+    let mut p: u64 = 0;
+    for i in 0..=31 {
+        if v0 & (1u32 << i) != 0 {
+            p ^= u64::from(v1) << (i + 1);
+        }
+    }
+    for i in 1..=31 {
+        if p & (1u64 << i) != 0 {
+            p ^= u64::from(IEEE_802_3_POLY) << (i + 1);
+        }
+    }
+    (p >> 32) as u32
+}
+
+fn add_zeroes(mut crc: u32, mut block_size: u64) -> u32 {
+    // Start with x^8, one followed by 1 byte of zeroes
+    // Note: The succession of values in `bytes` is constant
+    let mut power = 0x00_80_00_00;
+
+    while block_size != 0 {
+        if block_size & 1 != 0 {
+            crc = mult_mod(crc, power);
+        }
+        power = mult_mod(power, power);
+        block_size >>= 1;
+    }
+
+    crc
+}
+
 #[cfg(test)]
 mod test {
+    use super::FINAL_CRC_XOR;
+    use super::INITIAL_CRC;
     use super::PartialHasher;
     use rand_xoshiro::Xoshiro256StarStar;
     use rand_xoshiro::rand_core::RngCore;
     use rand_xoshiro::rand_core::SeedableRng;
+
+    #[test]
+    fn test_add_zeroes() {
+        for i in 0u16..=1024 {
+            let add_zeroes_crc = super::add_zeroes(INITIAL_CRC, u64::from(i)) ^ FINAL_CRC_XOR;
+
+            assert_eq!(add_zeroes_crc, crc32fast::hash(&vec![0; usize::from(i)]));
+        }
+
+        let mut rand = Xoshiro256StarStar::seed_from_u64(0);
+        let mut target = vec![0; 1024];
+        rand.fill_bytes(target.as_mut_slice());
+
+        for i in 0..=target.len() {
+            let truncated: Vec<u8> = target
+                .iter()
+                .enumerate()
+                .map(|(ci, c)| if ci < i { *c } else { 0 })
+                .collect();
+
+            let add_zeroes_crc = super::add_zeroes(
+                crc32fast::hash(&target[0..i]) ^ FINAL_CRC_XOR,
+                u64::try_from(target.len() - i).unwrap(),
+            ) ^ FINAL_CRC_XOR;
+            assert_eq!(add_zeroes_crc, crc32fast::hash(&truncated));
+        }
+    }
 
     fn true_initial_truncate_crc(target: &[u8], first_non_truncated_byte: usize) -> u32 {
         let mut expected_crc_hasher = crc32fast::Hasher::new();
