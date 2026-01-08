@@ -2,10 +2,8 @@ pub struct PartialHasher<'a> {
     buf: &'a [u8],
     first: bool,
 
-    all_zero: u32,
     current_crc: u32,
     rolling_bit_masks: [u32; 8],
-    advance_one_byte: u32,
 }
 
 impl<'a> PartialHasher<'a> {
@@ -15,38 +13,25 @@ impl<'a> PartialHasher<'a> {
             return Self {
                 buf,
                 first: true,
-                all_zero: crc ^ FINAL_CRC_XOR,
                 current_crc: crc,
                 rolling_bit_masks: [0; 8],
-                advance_one_byte: 0,
             };
         }
 
         let buf_size_u64 = u64::try_from(buf.len()).expect("u64 should fit file size");
 
-        let block_zero = add_zeroes(INITIAL_CRC, buf_size_u64);
-        let block_zero_plus_one_bit = update_one_bit(block_zero, false);
-        // the difference in CRC from one extra 0 bit at the start (calculated here from adding one
-        // zero bit at the end since we need block_zero anyway, equivalent for all zeroes)
-        let advance_one_bit = block_zero ^ block_zero_plus_one_bit;
-
         let mut rolling_bit_masks = [0; 8];
         // roll in a single 1
-        rolling_bit_masks[0] = update_one_bit(block_zero, true) ^ advance_one_bit;
+        rolling_bit_masks[0] = update_one_bit(0, true);
         for i in 1..8 {
-            rolling_bit_masks[i] =
-                update_one_bit(rolling_bit_masks[i - 1], false) ^ advance_one_bit;
+            rolling_bit_masks[i] = update_one_bit(rolling_bit_masks[i - 1], false);
         }
-
-        let advance_one_byte = add_zeroes(block_zero, 1) ^ block_zero;
 
         Self {
             buf,
             first: true,
-            all_zero: block_zero,
-            current_crc: block_zero ^ FINAL_CRC_XOR,
+            current_crc: add_zeroes(INITIAL_CRC, buf_size_u64) ^ FINAL_CRC_XOR,
             rolling_bit_masks,
-            advance_one_byte,
         }
     }
 
@@ -82,10 +67,9 @@ impl Iterator for PartialHasher<'_> {
         for i in 0..8 {
             let bit_mask = self.rolling_bit_masks[i];
             if last_byte & (0x80 >> i) != 0 {
-                self.current_crc ^= bit_mask ^ self.all_zero;
+                self.current_crc ^= bit_mask;
             }
-            self.rolling_bit_masks[i] =
-                BYTE_TABLE[usize::from(bit_mask as u8)] ^ (bit_mask >> 8) ^ self.advance_one_byte;
+            self.rolling_bit_masks[i] = BYTE_TABLE[usize::from(bit_mask as u8)] ^ (bit_mask >> 8);
         }
         self.buf = rest;
 
